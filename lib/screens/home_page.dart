@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../models/tarefa.dart';
-import '../services/tarefa_storage.dart';
 import '../theme/app_colors.dart';
 import '../utils/tarefa_utils.dart';
 import 'detalhes_tarefa_page.dart';
 import '../widgets/tarefa_item.dart';
+import '../services/tarefa_api.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -28,63 +28,136 @@ class _HomePageState extends State<HomePage> {
     _carregarTarefas();
   }
 
-  Future<void> _carregarTarefas() async {
-    final tarefasSalvas = await TarefaStorage.carregar();
+  
+Future<void> _carregarTarefas() async {
+  try {
+    final resultado = await TarefaApi.listar();
+
+    if (!mounted) return;
 
     setState(() {
-      tarefas.addAll(tarefasSalvas);
+      tarefas
+        ..clear()
+        ..addAll(resultado);
       carregando = false;
     });
-  }
+  } catch (e) {
+    if (!mounted) return;
 
-  void _salvarTarefas() {
-    TarefaStorage.salvar(tarefas);
-  }
+    setState(() => carregando = false);
 
-  void adicionarTarefa(
-    String titulo,
-    Prioridade prioridade,
-    DateTime? dataVencimento,
-  ) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Erro ao carregar tarefas: $e')),
+    );
+  }
+}
+
+Future<void> adicionarTarefa(
+  String titulo,
+  Prioridade prioridade,
+  DateTime? dataVencimento,
+) async {
+  try {
+    final criada = await TarefaApi.criar(
+      Tarefa(
+        titulo: titulo,
+        prioridade: prioridade,
+        dataVencimento: dataVencimento,
+      ),
+    );
+
+    if (!mounted) return;
+
+    setState(() => tarefas.add(criada));
+  } catch (e) {
+    _mostrarErro('Não foi possível cadastrar a tarefa: $e');
+  }
+}
+
+Future<void> editarTarefa(
+  int indice,
+  String novoTitulo,
+  Prioridade novaPrioridade,
+  DateTime? novaData,
+) async {
+  final original = tarefas[indice];
+
+  final atualizada = Tarefa(
+    id: original.id,
+    titulo: novoTitulo,
+    concluida: original.concluida,
+    prioridade: novaPrioridade,
+    dataVencimento: novaData,
+  );
+
+  try {
+    await TarefaApi.atualizar(atualizada);
+
+    if (!mounted) return;
+
     setState(() {
-      tarefas.add(
-        Tarefa(
-          titulo: titulo,
-          prioridade: prioridade,
-          dataVencimento: dataVencimento,
-        ),
-      );
+      tarefas[indice] = atualizada;
     });
-    _salvarTarefas();
+  } catch (e) {
+    _mostrarErro('Não foi possível editar a tarefa: $e');
   }
+}
 
-  void editarTarefa(
-    int indice,
-    String novoTitulo,
-    Prioridade novaPrioridade,
-    DateTime? novaData,
-  ) {
+Future<void> alternarTarefa(int indice) async {
+  final original = tarefas[indice];
+
+  final atualizada = Tarefa(
+    id: original.id,
+    titulo: original.titulo,
+    concluida: !original.concluida,
+    prioridade: original.prioridade,
+    dataVencimento: original.dataVencimento,
+  );
+
+  try {
+    await TarefaApi.atualizar(atualizada);
+
+    if (!mounted) return;
+
     setState(() {
-      tarefas[indice].titulo = novoTitulo;
-      tarefas[indice].prioridade = novaPrioridade;
-      tarefas[indice].dataVencimento = novaData;
+      tarefas[indice] = atualizada;
     });
-    _salvarTarefas();
+  } catch (e) {
+    _mostrarErro('Não foi possível alterar a tarefa: $e');
+  }
+}
+
+Future<bool> removerTarefa(int indice) async {
+  final original = tarefas[indice];
+
+  if (original.id == null) {
+    _mostrarErro('A tarefa não possui ID no banco.');
+    return false;
   }
 
-  void alternarTarefa(int indice) {
-    setState(() {
-      tarefas[indice].alternarConclusao();
-    });
-    _salvarTarefas();
-  }
+  try {
+    await TarefaApi.excluir(original.id!);
 
-  void removerTarefa(int indice) {
+    if (!mounted) return false;
+
     setState(() {
       tarefas.removeAt(indice);
     });
-    _salvarTarefas();
+    return true;
+  } catch (e) {
+    _mostrarErro('Não foi possível excluir a tarefa: $e');
+    return false;
   }
+}
+
+void _mostrarErro(String mensagem) {
+  if (!mounted) return;
+
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(mensagem)),
+  );
+}
+
 
   int get tarefasConcluidas {
     return tarefas.where((tarefa) => tarefa.concluida).length;
@@ -264,11 +337,12 @@ class _HomePageState extends State<HomePage> {
                           itemCount: tarefasFiltradas.length,
                           itemBuilder: (context, indice) {
                             final tarefa = tarefasFiltradas[indice];
+                            final indiceOriginal = tarefas.indexOf(tarefa);
 
                             return TarefaItem(
                               tarefa: tarefa,
                               aoAlternar: () {
-                                alternarTarefa(indice);
+                                alternarTarefa(indiceOriginal);
                               },
                               aoExcluir: () {
                                 showDialog(
@@ -294,18 +368,23 @@ class _HomePageState extends State<HomePage> {
                                             backgroundColor:
                                                 AppColors.prioridadeAlta,
                                           ),
-                                          onPressed: () {
-                                            removerTarefa(indice);
+                                          onPressed: () async {
+                                            final excluida =
+                                                await removerTarefa(indiceOriginal);
+
+                                            if (!context.mounted) return;
                                             Navigator.pop(context);
 
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(
-                                                  const SnackBar(
-                                                    content: Text(
-                                                      'Tarefa excluída!',
-                                                    ),
+                                            if (excluida) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                const SnackBar(
+                                                  content: Text(
+                                                    'Tarefa excluída!',
                                                   ),
-                                                );
+                                                ),
+                                              );
+                                            }
                                           },
                                           child: const Text('Excluir'),
                                         ),
@@ -320,6 +399,7 @@ class _HomePageState extends State<HomePage> {
                                 );
 
                                 DateTime? novaData = tarefa.dataVencimento;
+                                Prioridade novaPrioridade = tarefa.prioridade;
 
                                 showDialog(
                                   context: context,
@@ -389,9 +469,9 @@ class _HomePageState extends State<HomePage> {
                                                 .trim()
                                                 .isNotEmpty) {
                                               editarTarefa(
-                                                indice,
+                                                indiceOriginal,
                                                 controlador.text.trim(),
-                                                tarefa.prioridade,
+                                                novaPrioridade,
                                                 novaData,
                                               );
 
